@@ -27,117 +27,246 @@ namespace WorkerRole1
 
         //12,000 after about 25 minutes
         private HashSet<string> visitedUrls = new HashSet<string>();
-        private List<string> cnnBlacklist = new List<string>();
-        private List<string> bleacherBlacklist = new List<string>();
+        private HashSet<string> cnnBlacklist = new HashSet<string>();
+        private HashSet<string> bleacherBlacklist = new HashSet<string>();
         private List<string> initialSitemap = new List<string>();
         private DateTime start = new DateTime(2016, 03, 01);
         private static XmlNamespaceManager mngr = new XmlNamespaceManager(new NameTable());
         private CloudQueue queue;
+        private CloudQueue startQueue;
+        private CloudQueue lastTen;
+        private CloudQueue state;
+        private CloudQueue errors;
         private CloudTable table;
+        private bool crawl = false;
 
 
         public override void Run()
         {
-            /*
-            Trace.TraceInformation("WorkerRole1 is running");
-
-            try
-            {
-                this.RunAsync(this.cancellationTokenSource.Token).Wait();
-            }
-            finally
-            {
-                this.runCompleteEvent.Set();
-            }
-            */
             CloudStorageAccount storageAccount = CloudStorageAccount.Parse(ConfigurationManager.AppSettings["StorageConnectionString"]);
             CloudQueueClient queueClient = storageAccount.CreateCloudQueueClient();
             queue = queueClient.GetQueueReference("urls");
             queue.CreateIfNotExists();
 
+            startQueue = queueClient.GetQueueReference("command");
+            startQueue.CreateIfNotExists();
+
+            lastTen = queueClient.GetQueueReference("lastten");
+            lastTen.CreateIfNotExists();
+
+            state = queueClient.GetQueueReference("state");
+            state.CreateIfNotExists();
+
+            errors = queueClient.GetQueueReference("error");
+            errors.CreateIfNotExists();
+
             CloudTableClient tableClient = storageAccount.CreateCloudTableClient();
             table = tableClient.GetTableReference("pages");
             table.CreateIfNotExists();
-            
+
             string cnnRobots = "http://www.cnn.com/robots.txt";
             string bleacherRobots = "http://bleacherreport.com/robots.txt";
 
-            createBlacklist(cnnRobots, cnnBlacklist, initialSitemap);
-            createBlacklist(bleacherRobots, bleacherBlacklist, initialSitemap);
+            createBlacklist(cnnRobots, cnnBlacklist);
+            createBlacklist(bleacherRobots, bleacherBlacklist);
 
-            //while start is true
+            //maybe change so it stops loading as well
             while (true)
             {
-                //getHTML("http://www.cnn.com/2016/05/10/asia/japan-artist-vagina-kayak/index.html");
-                /*for (int i = 0; i < initialSitemap.Count; i++)
+                getState("idle");
+                if (startOrStop("start"))
                 {
+                    crawl = true;
+                }
+                for (int i = 0; i < initialSitemap.Count && crawl; i++)
+                {
+                    getState("loading");
                     searchSitemap(initialSitemap[i], queue);
-                }*/
-                CloudQueueMessage getMessage = queue.GetMessage();
-                if (getMessage != null)
+                }
+                while (crawl)
                 {
-                    string message = getMessage.AsString;
-                    getHTML(message);
+                    if (startOrStop("stop"))
+                    {
+                        crawl = false;
+                    }
+                    CloudQueueMessage getMessage = queue.GetMessage();
+                    if (getMessage != null)
+                    {
+                        getState("crawling");
+                        string message = getMessage.AsString;
+                        queue.DeleteMessage(getMessage);
+                        getHTML(message);
+                        
+                    }
+                }
+            }
+
+        }
+
+        private void getState(string input)
+        {
+            CloudQueueMessage stateMessage = state.PeekMessage();
+            if (stateMessage != null)
+            {
+                string smString = stateMessage.AsString;
+                if (smString != input)
+                {
+                    CloudQueueMessage deleteMessage = state.GetMessage();
+                    state.DeleteMessage(deleteMessage);
+                    state.AddMessage(new CloudQueueMessage(input));
+                }
+            }
+            else
+            {
+                state.AddMessage(new CloudQueueMessage(input));
+            }
+        }
+
+        //handle 404 error messages... errors are still added to last 10... not sure if this is supposed to be that way
+        private void getHTML(string input)
+        {
+            /*if (!input.Contains("http://"))
+            {
+                input = "http://" + input;
+            }*/
+            lastTen.AddMessage(new CloudQueueMessage(input));
+            lastTen.FetchAttributes();
+            //sometimes returns 9, and sometimes 11...mostly 10 though
+            //switch this to be after the // check
+            if (lastTen.ApproximateMessageCount > 10)
+            {
+                CloudQueueMessage first = lastTen.GetMessage();
+                lastTen.DeleteMessage(first);
+
+            }
+            bool stop = false;
+            if (input.Length > 6)
+            {
+                //ones that are ok... "videos" "specials" "profiles"
+                string checkLine = input.Substring(7);
+                if (checkLine.Contains("//"))
+                {
+                    stop = true;
+                }
+            }
+            Uri uri;
+            if (Uri.TryCreate(input, UriKind.Absolute, out uri) && !stop)
+            {
+                HtmlDocument htmlDoc = new HtmlWeb().Load(input);
+                if (htmlDoc.DocumentNode != null)
+                {
+                    try
+                    {
+                        HtmlNode headNode = htmlDoc.DocumentNode.SelectSingleNode("//head");
+                        if (headNode != null)
+                        {
+                            HtmlNode titleNode = headNode.SelectSingleNode("//title");
+                            if (titleNode != null)
+                            {
+                                string title = titleNode.InnerText;
+                                if (title == "Error")
+                                {
+                                    errors.AddMessage(new CloudQueueMessage(input));
+                                }
+                                else
+                                {
+                                    HtmlNodeCollection metaList = headNode.SelectNodes("//meta");
+                                    if (metaList != null)
+                                    {
+                                        foreach (HtmlNode node in metaList)
+                                        {
+                                            if (node.GetAttributeValue("name", "not found") == "pubdate")
+                                            {
+                                                string date = node.Attributes["content"].Value;
+                                                addToTable(input, title, date);
+                                                break;
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        //relative url, errors
+                        HtmlNode bodyNode = htmlDoc.DocumentNode.SelectSingleNode("//body");
+                        if (bodyNode != null)
+                        {
+                            HtmlNodeCollection urlList = bodyNode.SelectNodes("//a");
+                            if (urlList != null)
+                            {
+                                string currentSite = "";
+                                if (input.Contains("http://www.cnn.com/"))
+                                {
+                                    currentSite = "http://www.cnn.com/";
+                                }
+                                else if (input.Contains("http://bleacherreport.com"))
+                                {
+                                    currentSite = "http://bleacherreport.com";
+                                }
+                                foreach (HtmlNode node in urlList)
+                                {
+                                    var href = node.Attributes["href"];
+                                    if (href != null)
+                                    {
+                                        string newUrl = node.Attributes["href"].Value;
+                                        if (newUrl.Length > 1)
+                                        {
+                                            if (newUrl.StartsWith("/") && checkChar(newUrl[1]))
+                                            {
+                                                newUrl = currentSite + newUrl;
+                                            }
+                                            if (currentSite != "")
+                                            {
+                                                check(newUrl, currentSite);
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    catch (WebException we)
+                    {
+                        HttpWebResponse errorResponse = we.Response as HttpWebResponse;
+                        if (errorResponse.StatusCode == HttpStatusCode.NotFound)
+                        {
+                            errors.AddMessage(new CloudQueueMessage(input));
+                        }
+                    }
                 }
             }
         }
 
-        private void getHTML(string input)
+        private bool checkChar(char c)
         {
-            HtmlDocument htmlDoc = new HtmlWeb().Load(input);
-            if (htmlDoc.DocumentNode != null)
-            {
-                HtmlNode headNode = htmlDoc.DocumentNode.SelectSingleNode("//head");
-                if (headNode != null)
-                {
-                    HtmlNode titleNode = headNode.SelectSingleNode("//title");
-                    string title = titleNode.InnerText;
-                    HtmlNodeCollection metaList = headNode.SelectNodes("//meta");
-                    foreach (HtmlNode node in metaList)
-                    {
-                        if (node.GetAttributeValue("name", "not found") == "pubdate")
-                        {
-                            string date = node.Attributes["content"].Value;
-                            addToTable(input, title, date);
-                            break;
-                        }
-                    }
-                }
-                HtmlNode bodyNode = htmlDoc.DocumentNode.SelectSingleNode("//body");
-                if (bodyNode != null)
-                {
-                    HtmlNodeCollection urlList = bodyNode.SelectNodes("//a");
-                    foreach (HtmlNode node in urlList)
-                    {
-                        var href = node.Attributes["href"];
-                        if (href != null)
-                        {
-                            string newUrl = node.Attributes["href"].Value;
-                            if (newUrl.Contains(".cnn.com/"))
-                            {
-                                check(newUrl, "cnn");
-                            } else if (newUrl.Contains("bleacherreport.com/"))
-                            {
-                                check(newUrl, "bleacher");
-                            }
-                        }
-                    }
-                }
-            }
+            return (c >= 'a' && c <= 'z');
         }
 
         private void addToTable(string url, string title, string date)
         {
             TableOperation insertOperation = TableOperation.Insert(new Page(url, title, date));
             table.Execute(insertOperation);
+            TableOperation retrieve = TableOperation.Retrieve<Counter>("counter", "counter");
+            TableResult retrievedResult = table.Execute(retrieve);
+            if (retrievedResult.Result == null)
+            {
+                TableOperation insertNewCounter = TableOperation.Insert(new Counter(0));
+                table.Execute(insertNewCounter);
+            }
+            else
+            {
+                int newCount = ((Counter)retrievedResult.Result).count;
+                TableOperation delete = TableOperation.Delete((Counter)retrievedResult.Result);
+                table.Execute(delete);
+                TableOperation insertNewCount = TableOperation.Insert(new Counter(newCount));
+                table.Execute(insertNewCount);
+            }
         }
-        
+
         private void searchSitemap(string url, CloudQueue queue)
         {
             XmlDocument doc = new XmlDocument();
             doc.Load(url);
             XmlNamespaceManager nsmgr = new XmlNamespaceManager(doc.NameTable);
-            //maybe try automating this to make it better
             nsmgr.AddNamespace("sm", "http://www.sitemaps.org/schemas/sitemap/0.9");
             nsmgr.AddNamespace("img", "http://www.google.com/schemas/sitemap-image/1.1");
             nsmgr.AddNamespace("news", "http://www.google.com/schemas/sitemap-news/0.9");
@@ -158,125 +287,65 @@ namespace WorkerRole1
                         initialSitemap.Add(sitemapUrl);
                     }
                 }
-            } else if (urls.Count != 0)
+            }
+            else if (urls.Count != 0)
             {
                 foreach (XmlNode node in urls)
                 {
                     var urlNode = node.SelectSingleNode("sm:loc", nsmgr);
                     string urlText = urlNode.InnerText;
-                    if (urlText.Contains(".cnn.com/"))
+                    if (urlText.Contains("http://www.cnn.com/"))
                     {
-                        check(urlText, "cnn");
-                    } else
+                        check(urlText, "http://www.cnn.com/");
+                    }
+                    else
                     {
-                        check(urlText, "bleacher");
+                        check(urlText, "http://bleacherreport.com");
                     }
                 }
             }
-            
-            /*HttpWebRequest request = (HttpWebRequest)HttpWebRequest.Create(url);
-            request.UserAgent = "A .NET Web Crawler";
-            WebResponse response = request.GetResponse();
-            Stream stream = response.GetResponseStream();
-            StreamReader reader = new StreamReader(stream);
-            while (reader.EndOfStream == false)
-            {
-                string line = reader.ReadLine();
-                string newLine = "";
-                if (line.Contains(".cnn.com/"))
-                {
-                    newLine = check(line, queue, "cnn");
-                } else if (line.Contains("bleacherreport.com/"))
-                {
-                    newLine = check(line, queue, "bleacher");
-                }
-                if (line.Contains("<sitemap>"))
-                {
-                    
-                    if (doc.DocumentNode != null)
-                    {
-                        HtmlNode date = doc.DocumentNode.SelectSingleNode("//lastmod");
-                        DateTime sitemapDate = DateTime.Parse(date.InnerText);
-                        if (start < sitemapDate)
-                        {
-                            HtmlNode sitemapNode = doc.DocumentNode.SelectSingleNode("//loc");
-                            string sitemapUrl = sitemapNode.InnerText;
-                            initialSitemap.Add(sitemapUrl);
-                        }
-                    }
-                    XElement xml = XElement.Parse(line);
-                    XNamespace df = xml.Name.Namespace;
-                    string strip = (string)xml.Element(df + "loc");
-                    initialSitemap.Add(strip);
-                } else if (line.Contains("<url>"))
-                {
-                    //<lastmod> as well
-                    if (line.Contains("publication_date"))
-                    {
-                        //HtmlDocument doc = new HtmlWeb().Load(line);
-                        if (doc.DocumentNode != null)
-                        {
-                            HtmlNode date = doc.DocumentNode.SelectSingleNode("//news:news");
-
-                        }
-                        XmlDocument xml = getXmlDocument(line);
-                        XmlNodeList nodeList = xml.SelectNodes("//url");
-                        foreach (XmlNode node in nodeList) // for each <testcase> node
-                        {
-                            var name = node.Attributes.GetNamedItem("loc").InnerText;
-                            var date = node.Attributes.GetNamedItem("news:news").InnerText;
-                        }
-                                
-                        //XNamespace df = xml.Name.Namespace;
-                        //string strip = (string)xml.Element(df + "loc");
-                        //DateTime current = DateTime.Parse(strip);
-                        //if (current > start)
-                        //{
-                        //    check(line, queue, "cnn");
-                        //}
-                    } else
-                    {
-                        check(line, "cnn");
-                    }
-                }
-            }*/
         }
 
         private string check(string line, string site)
         {
-            //XDocument xml = XDocument.Parse(line);
-            //string strip = xml.Root.Element("loc").Value;
-            if (site == "cnn")
+            
+            if (line.StartsWith(site))
             {
-                foreach (string url in cnnBlacklist)
+                if (site == "http://www.cnn.com/")
                 {
-                    if (line.Contains(url))
+                    foreach (string url in cnnBlacklist)
                     {
-                        return "";
+                        if (line.Contains(url))
+                        {
+                            return "";
+                        }
                     }
                 }
-            } else if (site == "bleacher")
-            {
-                foreach (string url in bleacherBlacklist)
+                else if (site == "http://bleacherreport.com")
                 {
-                    if (line.Contains(url))
+                    foreach (string url in bleacherBlacklist)
                     {
-                        return "";
+                        if (line.Contains(url))
+                        {
+                            return "";
+                        }
                     }
                 }
+                if (!visitedUrls.Contains(line) && line.StartsWith(site))
+                {
+                    visitedUrls.Add(line);
+                    queue.AddMessage(new CloudQueueMessage(line));
+                    return line;
+                }
+                else
+                {
+                    return "";
+                }
             }
-            if (!visitedUrls.Contains(line))
-            {
-                visitedUrls.Add(line);
-                queue.AddMessage(new CloudQueueMessage(line));
-                return line;
-            } else
-            {
-                return "";
-            }
+            return "";
         }
 
-        private static void createBlacklist(string url, List<string> blacklist, List<string> sitemap)
+        private void createBlacklist(string url, HashSet<string> blacklist)
         {
             HttpWebRequest request = (HttpWebRequest)HttpWebRequest.Create(url);
             request.UserAgent = "A .NET Web Crawler";
@@ -290,21 +359,38 @@ namespace WorkerRole1
                 {
                     string block = line.Substring(10);
                     blacklist.Add(block);
-                } else if (line.StartsWith("Sitemap: "))
+                }
+                else if (line.StartsWith("Sitemap: "))
                 {
                     string block = line.Substring(9);
                     if (url.Contains("bleacher"))
                     {
                         if (block.Contains("nba"))
                         {
-                            sitemap.Add(block);
+                            initialSitemap.Add(block);
                         }
-                    } else
+                    }
+                    else
                     {
-                        sitemap.Add(block);
+                        initialSitemap.Add(block);
                     }
                 }
             }
+        }
+
+        private bool startOrStop(string input)
+        {
+            CloudQueueMessage message = startQueue.GetMessage();
+            if (message != null)
+            {
+                startQueue.DeleteMessage(message);
+                string command = message.AsString.ToLower();
+                if (command == input)
+                {
+                    return true;
+                }
+            }
+            return false;
         }
 
         public override bool OnStart()

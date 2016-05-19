@@ -1,10 +1,37 @@
 ﻿<!DOCTYPE html>
 <html>
-<head>
-    <title></title>
-	<meta charset="utf-8" />
-</head>
-<body>
+    <head>
+        <title></title>
+	    <meta charset="utf-8" />
+        <script src="https://code.jquery.com/jquery-2.2.3.js" integrity="sha256-laXWtGydpwqJ8JA+X9x2miwmaiKhn8tVmOVEigRNtP4=" crossorigin="anonymous"></script>
+    </head>
+    <body>
+        <h1>Web Crawler Dashboard</h1>
+        <div>Worker state: <span id="state"></span></div>
+        <div>CPU Utilization: <span id="cpu"></span></div>
+        <div>Available RAM: <span id="ram"></span></div>
+        <div>Number of URL's crawled: <span id="urlNum"></span></div>
+        <div>Last ten URL's crawled:</div>
+        <ul id="lastTen"></ul>
+        <div>Size of queue: <span id="queueSize"></span></div>
+        <div>Size of index: <span id="indexSize"></span></div>
+        <div>Errors: </div>
+        <ul id="errors"></ul>
 
-</body>
+        <button id="reload">Reload Stats</button>
+        <br />
+        <button id="start">Start Crawling</button>
+        <br />
+        <button id="stop">Stop Crawling</button>
+        <br />
+        <button id="clear">Clear Index</button>
+        <br />
+        <label for="retrieve">Search for a URL:</label>
+        <br />
+        <input id="retrieve" type="text" />
+        <div>The title of the given URL page is: <br /><span id="result"></span></div>
+        <button id="submitRetrieve">Search</button>
+
+        <script type="text/javascript" src="JavaScript.js"></script>
+    </body>
 </html>

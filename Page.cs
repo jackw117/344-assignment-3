@@ -5,14 +5,15 @@ using System.Text;
 using System.Threading.Tasks;
 using Microsoft.WindowsAzure.Storage.Table;
 using System.Text.RegularExpressions;
+using System.Security.Cryptography;
 
 namespace ClassLibrary1
 {
     public class Page : TableEntity
     {
-        public string urlName { get; private set; }
-        public string title { get; private set; }
-        public string date { get; private set; }
+        public string urlName { get; set; }
+        public string title { get; set; }
+        public string date { get; set; }
 
         public Page() { }
 
@@ -22,8 +23,11 @@ namespace ClassLibrary1
             this.title = title;
             this.date = date;
             
-            this.PartitionKey = Regex.Replace(title.ToLower(), @"[^0-9a-z]+", " ");
-            this.RowKey = Guid.NewGuid().ToString();
+            byte[] encodedURL = new UTF8Encoding().GetBytes(url);
+            byte[] hash = ((HashAlgorithm)CryptoConfig.CreateFromName("MD5")).ComputeHash(encodedURL);
+            string encoded = BitConverter.ToString(hash).Replace("-", string.Empty).ToLower();
+            this.PartitionKey = encoded;
+            this.RowKey = Regex.Replace(url.ToLower(), @"[^0-9a-z]+", " ");
         }
     }
 }
