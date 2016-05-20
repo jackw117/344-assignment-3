@@ -179,8 +179,8 @@ function AJAXCalls() {
             success: function (msg) {
                 var data = eval(msg);
                 console.log(data);
-                for (var i = 10; i > 0; i) {
-                    lastTen.push(data.d[i]);
+                for (var key in data.d) {
+                    lastTen.push(data.d[key]);
                 }
             },
             error: function (msg) {

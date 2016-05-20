@@ -64,17 +64,13 @@ namespace WebRole1
             table.DeleteIfExists();
             cpuTable.DeleteIfExists();
             queue.DeleteIfExists();
-            startQueue.DeleteIfExists();
             lastTen.DeleteIfExists();
-            state.DeleteIfExists();
             errors.DeleteIfExists();
             Thread.Sleep(120000);
             table.Create();
             cpuTable.Create();
             queue.Create();
-            startQueue.Create();
             lastTen.Create();
-            state.Create();
             errors.Create();
             return "Everything has been deleted";
         }
