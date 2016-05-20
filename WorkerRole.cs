@@ -25,7 +25,6 @@ namespace WorkerRole1
         private readonly CancellationTokenSource cancellationTokenSource = new CancellationTokenSource();
         private readonly ManualResetEvent runCompleteEvent = new ManualResetEvent(false);
 
-        //12,000 after about 25 minutes
         private HashSet<string> visitedUrls = new HashSet<string>();
         private HashSet<string> cnnBlacklist = new HashSet<string>();
         private HashSet<string> bleacherBlacklist = new HashSet<string>();
@@ -39,7 +38,7 @@ namespace WorkerRole1
         private CloudQueue errors;
         private CloudTable table;
         private bool crawl = false;
-
+        private CloudTable cpuTable;
 
         public override void Run()
         {
@@ -64,13 +63,15 @@ namespace WorkerRole1
             table = tableClient.GetTableReference("pages");
             table.CreateIfNotExists();
 
+            cpuTable = tableClient.GetTableReference("cpu");
+            cpuTable.CreateIfNotExists();
+
             string cnnRobots = "http://www.cnn.com/robots.txt";
             string bleacherRobots = "http://bleacherreport.com/robots.txt";
 
             createBlacklist(cnnRobots, cnnBlacklist);
             createBlacklist(bleacherRobots, bleacherBlacklist);
 
-            //maybe change so it stops loading as well
             while (true)
             {
                 getState("idle");
@@ -89,6 +90,7 @@ namespace WorkerRole1
                     {
                         crawl = false;
                     }
+                    
                     CloudQueueMessage getMessage = queue.GetMessage();
                     if (getMessage != null)
                     {
@@ -96,7 +98,7 @@ namespace WorkerRole1
                         string message = getMessage.AsString;
                         queue.DeleteMessage(getMessage);
                         getHTML(message);
-                        
+
                     }
                 }
             }
@@ -122,17 +124,10 @@ namespace WorkerRole1
             }
         }
 
-        //handle 404 error messages... errors are still added to last 10... not sure if this is supposed to be that way
         private void getHTML(string input)
         {
-            /*if (!input.Contains("http://"))
-            {
-                input = "http://" + input;
-            }*/
             lastTen.AddMessage(new CloudQueueMessage(input));
             lastTen.FetchAttributes();
-            //sometimes returns 9, and sometimes 11...mostly 10 though
-            //switch this to be after the // check
             if (lastTen.ApproximateMessageCount > 10)
             {
                 CloudQueueMessage first = lastTen.GetMessage();
@@ -142,9 +137,8 @@ namespace WorkerRole1
             bool stop = false;
             if (input.Length > 6)
             {
-                //ones that are ok... "videos" "specials" "profiles"
                 string checkLine = input.Substring(7);
-                if (checkLine.Contains("//"))
+                if (checkLine.Contains("//") && !(checkLine.Contains("videos") || checkLine.Contains("specials") || checkLine.Contains("profiles") || checkLine.Contains("news")))
                 {
                     stop = true;
                 }
@@ -157,6 +151,7 @@ namespace WorkerRole1
                 {
                     try
                     {
+                        getCPU();
                         HtmlNode headNode = htmlDoc.DocumentNode.SelectSingleNode("//head");
                         if (headNode != null)
                         {
@@ -168,25 +163,21 @@ namespace WorkerRole1
                                 {
                                     errors.AddMessage(new CloudQueueMessage(input));
                                 }
-                                else
+                                HtmlNodeCollection metaList = headNode.SelectNodes("//meta");
+                                if (metaList != null)
                                 {
-                                    HtmlNodeCollection metaList = headNode.SelectNodes("//meta");
-                                    if (metaList != null)
+                                    foreach (HtmlNode node in metaList)
                                     {
-                                        foreach (HtmlNode node in metaList)
+                                        if (node.GetAttributeValue("name", "not found") == "pubdate")
                                         {
-                                            if (node.GetAttributeValue("name", "not found") == "pubdate")
-                                            {
-                                                string date = node.Attributes["content"].Value;
-                                                addToTable(input, title, date);
-                                                break;
-                                            }
+                                            string date = node.Attributes["content"].Value;
+                                            addToTable(input, title, date);
+                                            break;
                                         }
                                     }
                                 }
                             }
                         }
-                        //relative url, errors
                         HtmlNode bodyNode = htmlDoc.DocumentNode.SelectSingleNode("//body");
                         if (bodyNode != null)
                         {
@@ -308,7 +299,7 @@ namespace WorkerRole1
 
         private string check(string line, string site)
         {
-            
+
             if (line.StartsWith(site))
             {
                 if (site == "http://www.cnn.com/")
@@ -343,6 +334,30 @@ namespace WorkerRole1
                 }
             }
             return "";
+        }
+
+        private void getCPU()
+        {
+            PerformanceCounter cpuCounter = new PerformanceCounter();
+            cpuCounter.CategoryName = "Processor";
+            cpuCounter.CounterName = "% Processor Time";
+            cpuCounter.InstanceName = "_Total";
+            double first = cpuCounter.NextValue();
+            string val = cpuCounter.NextValue().ToString();
+            TableOperation retrieveCPU = TableOperation.Retrieve<CPU>("cpu", "cpu");
+            TableResult cpuResult = cpuTable.Execute(retrieveCPU);
+            if (cpuResult.Result == null)
+            {
+                TableOperation insertNewCPU = TableOperation.Insert(new CPU(val));
+                cpuTable.Execute(insertNewCPU);
+            }
+            else
+            {
+                TableOperation delete = TableOperation.Delete((CPU)cpuResult.Result);
+                cpuTable.Execute(delete);
+                TableOperation insertNewCount = TableOperation.Insert(new CPU(val));
+                cpuTable.Execute(insertNewCount);
+            }
         }
 
         private void createBlacklist(string url, HashSet<string> blacklist)

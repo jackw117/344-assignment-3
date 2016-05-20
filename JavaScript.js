@@ -58,20 +58,7 @@ $("#stop").click(function () {
 });
 
 $("#clear").click(function () {
-    $.ajax({
-        type: "POST",
-        url: "admin.asmx/clearIndex",
-        contentType: "application/json; charset=utf-8",
-        dataType: "json",
-        success: function (msg) {
-            var data = eval(msg);
-            console.log(data);
-        },
-        error: function (msg) {
-            console.log("error");
-            console.log(msg);
-        }
-    });
+    deleteAll();
 });
 
 $("#submitRetrieve").click(function () {
@@ -97,6 +84,42 @@ $("#submitRetrieve").click(function () {
     });
 });
 
+function deleteAll() {
+    $.when(
+        $.ajax({
+            type: "POST",
+            url: "admin.asmx/delete",
+            contentType: "application/json; charset=utf-8",
+            dataType: "json",
+            success: function (msg) {
+                var data = eval(msg);
+                console.log(data);
+            },
+            error: function (msg) {
+                console.log("error");
+                console.log(msg);
+            }
+        }),
+
+        $.ajax({
+            type: "POST",
+            url: "admin.asmx/stopCrawling",
+            contentType: "application/json; charset=utf-8",
+            dataType: "json",
+            success: function (msg) {
+                var data = eval(msg);
+                console.log(data);
+            },
+            error: function (msg) {
+                console.log("error");
+                console.log(msg);
+            }
+        })
+    ).then(function () {
+        AJAXCalls();
+    });
+}
+
 function AJAXCalls() {
     $.when(
         $.ajax({
@@ -109,7 +132,6 @@ function AJAXCalls() {
                 console.log(data);
                 stateText = data.d;
                 console.log(stateText);
-                //$("#state").append(data.d);
             },
             error: function (msg) {
                 console.log("error");
@@ -126,7 +148,6 @@ function AJAXCalls() {
                 var data = eval(msg);
                 console.log(data);
                 cpuText = data.d + "%";
-                //$("#cpu").append(data.d + "%");
             },
             error: function (msg) {
                 console.log("error");
@@ -143,7 +164,6 @@ function AJAXCalls() {
                 var data = eval(msg);
                 console.log(data);
                 ramText = data.d + "MB";
-                //$("#ram").append(data.d + "MB");
             },
             error: function (msg) {
                 console.log("error");
@@ -159,9 +179,8 @@ function AJAXCalls() {
             success: function (msg) {
                 var data = eval(msg);
                 console.log(data);
-                for (var key in data.d) {
-                    //$("#lastTen").append("<li>" + data.d[key] + "</li>");
-                    lastTen.push(data.d[key]);
+                for (var i = 10; i > 0; i) {
+                    lastTen.push(data.d[i]);
                 }
             },
             error: function (msg) {
@@ -179,7 +198,6 @@ function AJAXCalls() {
                 var data = eval(msg);
                 console.log(data);
                 for (var key in data.d) {
-                    //$("#errors").append("<li>" + data.d[key] + "</li>");
                     errors.push(data.d[key]);
                 }
             },
@@ -198,7 +216,6 @@ function AJAXCalls() {
                 var data = eval(msg);
                 console.log(data);
                 queueSizeText = data.d + " pages";
-                //$("#queueSize").append(data.d + " pages");
             },
             error: function (msg) {
                 console.log("error");
@@ -215,7 +232,6 @@ function AJAXCalls() {
                 var data = eval(msg);
                 console.log(data);
                 indexSizeText = data.d + " pages";
-                //$("#indexSize").append(data.d + " pages");
             },
             error: function (msg) {
                 console.log("error");

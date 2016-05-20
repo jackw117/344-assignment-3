@@ -37,6 +37,7 @@ namespace WebRole1
         private CloudQueue state;
         private CloudQueue errors;
         private CloudTable table;
+        private CloudTable cpuTable;
 
         [WebMethod]
         [ScriptMethod(ResponseFormat = ResponseFormat.Json)]
@@ -57,13 +58,25 @@ namespace WebRole1
         }
 
         [WebMethod]
-        public string clearIndex()
+        public string delete()
         {
             setupStorageAccount();
             table.DeleteIfExists();
+            cpuTable.DeleteIfExists();
+            queue.DeleteIfExists();
+            startQueue.DeleteIfExists();
+            lastTen.DeleteIfExists();
+            state.DeleteIfExists();
+            errors.DeleteIfExists();
             Thread.Sleep(120000);
             table.Create();
-            return "Index has been cleared";
+            cpuTable.Create();
+            queue.Create();
+            startQueue.Create();
+            lastTen.Create();
+            state.Create();
+            errors.Create();
+            return "Everything has been deleted";
         }
 
         [WebMethod]
@@ -94,10 +107,11 @@ namespace WebRole1
         public string getPageTitle(string url)
         {
             setupStorageAccount();
+            url = url.ToLower();
             byte[] encodedURL = new UTF8Encoding().GetBytes(url);
             byte[] hash = ((HashAlgorithm)CryptoConfig.CreateFromName("MD5")).ComputeHash(encodedURL);
             string encoded = BitConverter.ToString(hash).Replace("-", string.Empty).ToLower();
-            string newUrl = Regex.Replace(url.ToLower(), @"[^0-9a-z]+", " ");
+            string newUrl = Regex.Replace(url, @"[^0-9a-z]+", " ");
             string result = "";
             TableOperation retrieve = TableOperation.Retrieve<Page>(encoded, newUrl);
             TableResult retrievedResult = table.Execute(retrieve);
@@ -154,13 +168,16 @@ namespace WebRole1
 
         [WebMethod]
         [ScriptMethod(ResponseFormat = ResponseFormat.Json)]
-        public double getCPU()
+        public string getCPU()
         {
-            PerformanceCounter cpuCounter = new PerformanceCounter();
-            cpuCounter.CategoryName = "Processor";
-            cpuCounter.CounterName = "% Processor Time";
-            cpuCounter.InstanceName = "_Total";
-            return cpuCounter.NextValue();
+            setupStorageAccount();
+            TableOperation retrieve = TableOperation.Retrieve<CPU>("cpu", "cpu");
+            TableResult retrievedResult = cpuTable.Execute(retrieve);
+            if (retrievedResult.Result != null)
+            {
+                return ((CPU)retrievedResult.Result).cpu;
+            }
+            return "0";
         }
 
         [WebMethod]
@@ -203,6 +220,9 @@ namespace WebRole1
             CloudTableClient tableClient = storageAccount.CreateCloudTableClient();
             table = tableClient.GetTableReference("pages");
             table.CreateIfNotExists();
+
+            cpuTable = tableClient.GetTableReference("cpu");
+            cpuTable.CreateIfNotExists();
 
             startQueue = queueClient.GetQueueReference("command");
             startQueue.CreateIfNotExists();
